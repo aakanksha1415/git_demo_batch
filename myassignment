@@ -1,0 +1,119 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(name: 'Branch', choices: 'dev\nprod', description: 'Select the branch')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    def selectedBranch = params.Branch.toLowerCase()
+                    checkout([$class: 'GitSCM',
+                        branches: [[name: selectedBranch]],
+                        doGenerateSubmoduleConfigurations: false,                      
+                        userRemoteConfigs: [[credentialsId: '79b8f54d-8f2a-4bee-9ad3-af1730998439', url: 'https://github.com/aakanksha1415/devops_project.git']]])
+                }
+            }
+        }
+        stage('Build'){
+            tools {
+                jdk "java11" // the name you have given the JDK installation using the JDK manager (Global Tool Configuration)
+            }
+            steps{
+                dir('MyProject') {
+                    withMaven(maven: 'mvn') {
+                        sh 'mvn clean install'
+                    }        
+                }
+            }
+         }
+        stage('Creating Docker Images') {
+            steps{
+                dir('MyProject') {
+                     sh 'docker build -t tomcat:9.0-alpine .'
+                }
+            }
+        }
+      stage('Check if container running'){
+            steps{
+                dir('MyProject'){
+                    script{
+                        def selectedBranch = params.Branch.toLowerCase()
+                        def containerId = sh(script: "docker ps -a -q -f name='${selectedBranch}'", returnStatus: true, returnStdout: true)
+                        if (containerId != '') {
+                            sh(script:"docker rm -f '${selectedBranch}'")
+                        }
+                    }    
+                }
+            }
+        }
+
+       
+      stage('Run docker image'){
+            steps{
+                dir('MyProject'){
+                    script {
+                        def selectedBranch = params.Branch.toLowerCase()
+                      if(selectedBranch =="dev"){
+sh 'docker run --name dev -d -p 9080:8080 tomcat:9.0-alpine '
+} else {
+sh 'docker run --name prod -d -p 9082:8080 tomcat:9.0-alpine '
+}
+                    }
+                }
+            }
+        }
+ 
+        stage('SonarQube analysis') {
+            tools {
+                jdk "java11" // the name you have given the JDK installation using the JDK manager (Global Tool Configuration)
+            }
+            steps{
+                dir('MyProject') {
+                    withMaven(maven: 'mvn') {
+                        sh 'mvn clean verify sonar:sonar -Dsonar.projectKey=mvn-webapp -Dsonar.projectName=mvn-webapp -Dsonar.host.url=http://54.168.243.249:9000 -Dsonar.token=sqp_69272fd54f98c7969a561d51bccb9caf72b3f424'
+                    }
+                }
+            }
+        }
+        
+        
+       
+        
+        stage('Upload Artifacts'){
+            steps{
+                rtUpload (
+                    serverId: 'artifactory',
+                    spec: '''{
+                        "files": [
+                            {
+                                "pattern": "**/*.war",
+                                "target": "Project_aku"
+                            }
+                        ]
+                    }'''
+                )    
+            }
+        }
+     }
+    
+    post {
+        failure {
+            mail to: "aakanksha.deshmukh@nagarro.com", 
+            subject: "Pipeline Failed: ${currentBuild.fullDisplayName}",
+            body: "The Jenkins pipeline for branch ${params.Branch} has failed. Please investigate."
+        }
+        success {
+            mail to: "aakanksha.deshmukh@nagarro.com", 
+            subject: "Pipeline Successful: ${currentBuild.fullDisplayName}",
+            body: "The Jenkins pipeline for branch ${params.Branch} has successfully completed."
+        }
+    }
+    
+   
+
+}
+
+
